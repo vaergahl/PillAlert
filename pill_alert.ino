@@ -1,3 +1,4 @@
+#include <EEPROM.h> // for storage persistence
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <assert.h>
@@ -8,6 +9,9 @@
 #define COL_SEC 11
 #define PILL_MIN 6
 #define PILL_HOUR 3
+
+// Addresses
+#define CLOCK_ADDR 0
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
@@ -32,6 +36,10 @@ void time_render(int value, int col, int row) {
     lcd.print(buf);
 }
 
+int get_memloc(int start, int stride) {
+    return start + stride;
+}
+
 void time_set(int &value, int new_value, int col, int row) {
     value = new_value;
     time_render(value, col, row);
@@ -45,9 +53,13 @@ void time_inc(int &value, int col, int row) {
 void init_clock() {
     lcd.setCursor(get_col(0), 0);
     lcd.print("TIME --:--:--");
-    time_set(clock.seconds, 0, COL_SEC, 0);
-    time_set(clock.minutes, 0, COL_MIN, 0);
-    time_set(clock.hours, 0, COL_HOUR, 0);
+    EEPROM.get(CLOCK_ADDR, clock);
+    if (clock.seconds == NULL || clock.seconds < 0) clock.seconds = 0;
+    if (clock.minutes == NULL|| clock.minutes < 0) clock.minutes = 0;
+    if (clock.hours == NULL|| clock.hours < 0) clock.hours = 0;
+    time_render(clock.seconds, COL_SEC, 0);
+    time_render(clock.minutes, COL_MIN, 0);
+    time_render(clock.hours, COL_HOUR, 0);
 }
 
 void init_pill(int index, int col, int row) {
@@ -79,8 +91,7 @@ void clock_update() {
             if (clock.hours >= 24) time_set(clock.hours, 0, COL_HOUR, 0);
         }
     }
-    // Pill &pill = pills[2];
-    // time_inc(pill.time.minutes, pill.y + PILL_MIN, pill.x);
+    EEPROM.put(CLOCK_ADDR, clock);
     delay(1000);
 }
 
