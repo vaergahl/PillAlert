@@ -33,11 +33,11 @@ typedef struct {
     const long interval;
 } Task;
 
-/// modes: [0] = clock , [1-4] = pills
 struct Editor {
     int cursor;
     Time time;
-    int mode;
+    char values[4];
+    int mode; // [0] = clock , [1-4] = pills
 } editor;
 
 bool should_exec(Task &t, unsigned long &cm) {
@@ -74,6 +74,15 @@ void init_clock() {
     if (clock.secs == NULL || clock.secs < 0) clock.secs = 0;
     if (clock.mins == NULL|| clock.mins < 0) clock.mins = 0;
     if (clock.hours == NULL|| clock.hours < 0) clock.hours = 0;
+}
+
+void init_editor(int m) {
+    edit_mode = true;
+    assert(m < 4 || m >= 0);
+    editor.cursor =  EDITOR_START;
+    editor.mode = m;
+    if (editor.mode == 0) editor.time = clock;
+    else editor.time = pills[m-1].time;
 }
 
 void draw_ui() {
@@ -130,6 +139,7 @@ void clock_update() {
 }
 
 void draw_editor(const char *n) {
+    lcd.clear();
     lcd.setCursor(get_col(0), 0);
     lcd.print("EDITING: ");
     lcd.print(n);
@@ -141,24 +151,64 @@ void draw_editor(const char *n) {
     lcd.print("^");
 }
 
-void exit_editor() {
+void exit_editor(bool save) {
+    if (save) {
+        char buf[3] = { editor.values[0], editor.values[1], '\0' };
+        editor.time.hours = atoi(buf);
+        assert(editor.time.hours <= 24);
+        buf[0] = editor.values[2];
+        buf[1] = editor.values[3];
+        editor.time.mins = atoi(buf);
+        assert(editor.time.mins < 60);
+        editor.time.secs = 0;
+        if (editor.mode == 0) clock = editor.time;
+        else pills[editor.mode - 1].time = editor.time;
+    }
     edit_mode = false;
     lcd.clear();
     draw_ui();
 }
 
-void edit_time(const char c) {
-    lcd.setCursor(editor.cursor, 2);
-    lcd.print(c);
+int cur_as_index() {
+    int i = editor.cursor - EDITOR_START;
+    assert(i < 5);
+    if (i > 2) return i - 1;
+    return i;
+}
 
+bool set_editor_value(const char &c) {
+    int i = cur_as_index();
+    switch (i) {
+        case 0: {
+            if (c - '0' > 2) return false;
+        } break;
+        case 1: {
+            // check prev value if has value of 2
+            if (editor.values[0] == '2') {
+                if (c - '0' > 3) return false;
+            }
+        } break;
+        case 2: {
+            if (c - '0' > 5) return false;
+        } break;
+        default: break;
+    }
+    editor.values[i] = c;
+    lcd.setCursor(editor.cursor, 2);
+    lcd.print(editor.values[i]);
+    return true;
+
+}
+
+void set_editor_val(const char &c) {
+    if (!set_editor_value(c)) return;
     lcd.setCursor(editor.cursor, 3);
     lcd.print(" ");
-
     if (editor.cursor == EDITOR_START+1) editor.cursor += 2;
     else editor.cursor++;
 
     if (editor.cursor > EDITOR_START+4) {
-        exit_editor();
+        exit_editor(true);
         return;
     }
     lcd.setCursor(editor.cursor, 3);
@@ -167,24 +217,36 @@ void edit_time(const char c) {
 
 void handle_input(char &c) {
     switch(c) {
-        case 'A': {} break;
-        case 'B': {} break;
-        case 'C': {} break;
-        case 'D': {} break;
-        case '*': {
-            if (edit_mode) exit_editor();
+        case 'A': {
+            if (edit_mode) return;
+            init_editor(1);
+            draw_editor("Pill 1");
+        } break;
+        case 'B': {
+            if (edit_mode) return;
+            init_editor(2);
+            draw_editor("Pill 2");
+        } break;
+        case 'C': {
+            if (edit_mode) return;
+            init_editor(3);
+            draw_editor("Pill 3");
+        } break;
+        case 'D': {
+            if (edit_mode) return;
+            init_editor(4);
+            draw_editor("Pill 4");
         } break;
         case '#': {
             if (edit_mode) return;
-            edit_mode = true;
-            editor.cursor =  EDITOR_START;
-            editor.mode = 0;
-            editor.time = clock;
-            lcd.clear();
+            init_editor(0);
             draw_editor("Clock");
         } break;
+        case '*': {
+            if (edit_mode) exit_editor(false);
+        } break;
         default: {
-            if (edit_mode) edit_time(c);
+            if (edit_mode) set_editor_val(c);
         } break;
     }
 }
