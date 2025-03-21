@@ -12,7 +12,7 @@
 #define EDITOR_START 7
 
 // Addresses
-#define CLOCK_ADDR 0
+#define START_ADDR 0
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 bool edit_mode = false;
@@ -69,11 +69,15 @@ void time_inc(int &value, int col, int row) {
 Time clock;
 Pill pills[4] = {0};
 
+bool not_init(int &val) {
+    return val == NULL || val < 0;
+}
+
 void init_clock() {
-    EEPROM.get(CLOCK_ADDR, clock);
-    if (clock.secs == NULL || clock.secs < 0) clock.secs = 0;
-    if (clock.mins == NULL|| clock.mins < 0) clock.mins = 0;
-    if (clock.hours == NULL|| clock.hours < 0) clock.hours = 0;
+    EEPROM.get(START_ADDR, clock);
+    if (not_init(clock.secs)) clock.secs = 0;
+    if (not_init(clock.mins)) clock.mins = 0;
+    if (not_init(clock.hours)) clock.hours = 0;
 }
 
 void init_editor(int m) {
@@ -111,10 +115,14 @@ void draw_ui() {
 }
 
 void init_pill(int index, int col, int row) {
+
     Pill &pill = pills[index];
-    pill.time.secs = 0;
-    pill.time.mins = 0;
-    pill.time.hours = 0;
+    Time &time = pill.time;
+    const int pill_addr = START_ADDR + (sizeof(Time) * (index + 1));
+    EEPROM.get(pill_addr, time);
+    if (not_init(time.secs)) time.secs = 0;
+    if (not_init(time.mins)) time.mins = 0;
+    if (not_init(time.hours)) time.hours = 0;
     pill.x = row;
     pill.y = col;
 }
@@ -135,7 +143,7 @@ void clock_update() {
             if (clock.hours >= 24) time_set(clock.hours, 0, COL_HOUR, 0);
         }
     }
-    EEPROM.put(CLOCK_ADDR, clock);
+    EEPROM.put(START_ADDR, clock);
 }
 
 void draw_editor(const char *n) {
@@ -161,8 +169,12 @@ void exit_editor(bool save) {
         editor.time.mins = atoi(buf);
         assert(editor.time.mins < 60);
         editor.time.secs = 0;
-        if (editor.mode == 0) clock = editor.time;
-        else pills[editor.mode - 1].time = editor.time;
+        if (editor.mode > 0) {
+            Pill &pill = pills[editor.mode - 1];
+            pill.time = editor.time;
+            const int pill_addr = START_ADDR + (sizeof(Time) * editor.mode);
+            EEPROM.put(pill_addr, pill.time);
+        } else clock = editor.time;
     }
     edit_mode = false;
     lcd.clear();
