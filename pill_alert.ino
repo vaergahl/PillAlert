@@ -11,6 +11,13 @@
 #define PILL_HOUR 3
 #define EDITOR_START 7
 
+// Alarm
+#define ALARM_PIN 8
+#define NOTE_C6 1047
+#define NOTE_E6 1319
+#define NOTE_G6 1568
+#define NOTE_C7 2093
+
 // Addresses
 #define START_ADDR 0
 
@@ -25,12 +32,13 @@ typedef struct {
 
 typedef struct {
     Time time;
-    int x, y;
+    int row, col;
+    bool alarm;
 } Pill;
 
 typedef struct {
     unsigned long prev_m;
-    const long interval;
+    long interval;
 } Task;
 
 struct Editor {
@@ -40,7 +48,26 @@ struct Editor {
     int mode; // [0] = clock , [1-4] = pills
 } editor;
 
-bool should_exec(Task &t, unsigned long &cm) {
+struct Alarm {
+    bool playing;
+    bool on;
+    int cur_note;
+} alarm;
+
+Time clock;
+Pill pills[4] = {0};
+
+void stop_alarm() {
+    alarm.on = false;
+    alarm.playing = false;
+    alarm.cur_note = 0;
+    noTone(ALARM_PIN);
+    for (int i = 0; i < 4; i++) {
+        alarm_unmark(pills[i]);
+    }
+}
+
+bool should_exec(Task &t, const unsigned long &cm) {
     return (cm - t.prev_m) >= t.interval;
 }
 
@@ -66,11 +93,15 @@ void time_inc(int &value, int col, int row) {
     time_render(value, col, row);
 }
 
-Time clock;
-Pill pills[4] = {0};
-
 bool not_init(int &val) {
     return val == NULL || val < 0;
+}
+
+void init_alarm() {
+    pinMode(ALARM_PIN, OUTPUT);
+    alarm.on = false;
+    alarm.playing = false;
+    alarm.cur_note = 0;
 }
 
 void init_clock() {
@@ -102,8 +133,8 @@ void draw_ui() {
 
     for (int i = 0; i < 4; i++) {
         Pill &pill = pills[i];
-        int &row = pill.x;
-        int &col = pill.y;
+        int &row = pill.row;
+        int &col = pill.col;
         char pbuf[9];
         sprintf(pbuf, "P%d %02d:%02d",
                 i + 1,
@@ -111,6 +142,10 @@ void draw_ui() {
                 pill.time.mins);
         lcd.setCursor(get_col(col), row);
         lcd.print(pbuf);
+        if (pill.alarm) {
+            lcd.setCursor(pill.col, pill.row);
+            lcd.print(">");
+        }
     }
 }
 
@@ -123,8 +158,9 @@ void init_pill(int index, int col, int row) {
     if (not_init(time.secs)) time.secs = 0;
     if (not_init(time.mins)) time.mins = 0;
     if (not_init(time.hours)) time.hours = 0;
-    pill.x = row;
-    pill.y = col;
+    pill.row = row;
+    pill.col = col;
+    pill.alarm = false;
 }
 
 int get_col(int column) {
@@ -132,11 +168,45 @@ int get_col(int column) {
     return  PAD_RIGHT + column;
 }
 
+void alarm_mark(Pill &p) {
+    if (p.alarm) return;
+    p.alarm = true;
+    if (edit_mode) return;
+    lcd.setCursor(p.col, p.row);
+    lcd.print(">");
+}
+
+void alarm_unmark(Pill &p) {
+    if (!p.alarm) return;
+    p.alarm = false;
+    if (edit_mode) return;
+    lcd.setCursor(p.col, p.row);
+    lcd.print(" ");
+}
+
+void check_pills() {
+    bool should_alarm = false;
+    for (int i = 0; i < 4; i++) {
+        Pill &pill = pills[i];
+        Time &pt = pill.time;
+        char buf[16] = {0};
+        if (pt.mins == clock.mins && pt.hours == clock.hours) {
+            should_alarm = true;
+            alarm_mark(pill);
+        } else alarm_unmark(pill);
+        Serial.println(buf);
+    }
+    if (should_alarm && !alarm.on ) alarm.on = true;
+    else stop_alarm();
+}
+
 void clock_update() {
     time_inc(clock.secs, COL_SEC, 0);
     if (clock.secs >= 60) {
         time_set(clock.secs, 0, COL_SEC, 0);
         time_inc(clock.mins, COL_MIN, 0);
+        // we check pill time each time minutes is incremented.
+        check_pills();
         if (clock.mins >= 60) {
             time_set(clock.mins, 0, COL_MIN, 0);
             time_inc(clock.hours, COL_HOUR, 0);
@@ -230,32 +300,33 @@ void set_editor_val(const char &c) {
 void handle_input(char &c) {
     switch(c) {
         case 'A': {
-            if (edit_mode) return;
+            if (edit_mode || alarm.on) return;
             init_editor(1);
             draw_editor("Pill 1");
         } break;
         case 'B': {
-            if (edit_mode) return;
+            if (edit_mode || alarm.on) return;
             init_editor(2);
             draw_editor("Pill 2");
         } break;
         case 'C': {
-            if (edit_mode) return;
+            if (edit_mode || alarm.on) return;
             init_editor(3);
             draw_editor("Pill 3");
         } break;
         case 'D': {
-            if (edit_mode) return;
+            if (edit_mode || alarm.on) return;
             init_editor(4);
             draw_editor("Pill 4");
         } break;
         case '#': {
-            if (edit_mode) return;
+            if (edit_mode || alarm.on) return;
             init_editor(0);
             draw_editor("Clock");
         } break;
         case '*': {
             if (edit_mode) exit_editor(false);
+            else stop_alarm();
         } break;
         default: {
             if (edit_mode) set_editor_val(c);
@@ -266,6 +337,7 @@ void handle_input(char &c) {
 void setup() {
     Serial.begin(9600);
     Serial.println("Starting Pill Alert");
+    init_alarm();
     init_clock();
     init_pill(0, 0, 2);
     init_pill(1, 0, 3);
@@ -275,11 +347,38 @@ void setup() {
 }
 
 Task t_clock = { 0, 1000 };
-Task t_input = { 0, 50  };
+Task t_input = { 0, 50   };
+Task t_alarm = { 0, 1000 };
+Task t_tone  = { 0, 0 };
 char prev_key = 'x';
+int melody[] = { NOTE_C6, NOTE_E6, NOTE_G6, NOTE_C7, NOTE_G6, NOTE_C6 };
+int note_durations[] = { 300, 300, 300, 500, 300, 700 };
+
+void play_alarm(int cur_m) {
+    if (alarm.playing) {
+        if (should_exec(t_tone, cur_m)) {
+            if (alarm.cur_note < 6) {
+                tone(ALARM_PIN, melody[alarm.cur_note]);
+                t_tone.interval = note_durations[alarm.cur_note] * 1.3;
+                alarm.cur_note++;
+            } else {
+                noTone(ALARM_PIN);
+                alarm.playing = false;
+                t_alarm.prev_m = cur_m;
+            }
+        }
+    } else {
+        if (should_exec(t_alarm, cur_m)) {
+            alarm.playing = true;
+            alarm.cur_note = 0;
+            t_tone.prev_m = cur_m;
+            t_tone.interval = 0;
+        }
+    }
+}
 
 void loop() {
-    unsigned long cur_m = millis();
+    const unsigned long cur_m = millis();
 
     if (should_exec(t_clock, cur_m)) {
         t_clock.prev_m = cur_m;
@@ -288,13 +387,17 @@ void loop() {
 
     if (should_exec(t_input, cur_m)) {
         t_input.prev_m = cur_m;
-        char key =  get_input();
+        char key = get_input();
         if (key != prev_key) {
             prev_key = key;
             if ( key != 'x') {
                 handle_input(key);
             }
         }
+    }
+
+    if (alarm.on) {
+        if (should_exec(t_alarm, cur_m)) play_alarm(cur_m);
     }
 }
 
