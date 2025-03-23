@@ -1,3 +1,4 @@
+#include <Keypad.h>
 #include <EEPROM.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -21,8 +22,9 @@
 // Addresses
 #define START_ADDR 0
 
-LiquidCrystal_I2C lcd(0x27, 20, 4);
-bool edit_mode = false;
+// keypad
+#define ROWS 4
+#define COLS 4
 
 typedef struct {
     int secs;
@@ -42,6 +44,7 @@ typedef struct {
 } Task;
 
 struct Editor {
+    bool on;
     int cursor;
     Time time;
     char values[4];
@@ -56,6 +59,19 @@ struct Alarm {
 
 Time clock;
 Pill pills[4] = {0};
+
+char keys[ROWS][COLS] = {
+    {'1', '2', '3', 'A'},
+    {'4', '5', '6', 'B'},
+    {'7', '8', '9', 'C'},
+    {'*', '0', '#', 'D'}
+};
+
+byte rowPins[ROWS] = {9, 8, 7, 6};  // Connect to row pins of keypad
+byte colPins[COLS] = {5, 4, 3, 2};  // Connect to column pins of keypad
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 void stop_alarm() {
     alarm.on = false;
@@ -72,7 +88,7 @@ bool should_exec(Task &t, const unsigned long &cm) {
 }
 
 void time_render(int value, int col, int row) {
-    if (edit_mode) return;
+    if (editor.on) return;
     char buf[3] = {0};
     lcd.setCursor(get_col(col), row);
     sprintf(buf, "%02d", value);
@@ -109,10 +125,11 @@ void init_clock() {
     if (not_init(clock.secs)) clock.secs = 0;
     if (not_init(clock.mins)) clock.mins = 0;
     if (not_init(clock.hours)) clock.hours = 0;
+    editor.on = false;
 }
 
 void init_editor(int m) {
-    edit_mode = true;
+    editor.on = true;
     assert(m < 4 || m >= 0);
     editor.cursor =  EDITOR_START;
     editor.mode = m;
@@ -121,8 +138,6 @@ void init_editor(int m) {
 }
 
 void draw_ui() {
-    lcd.begin(20, 4);
-    lcd.backlight();
     lcd.setCursor(get_col(0), 0);
     char buf[14];
     sprintf(buf, "TIME %02d:%02d:%02d",
@@ -171,7 +186,7 @@ int get_col(int column) {
 void alarm_mark(Pill &p) {
     if (p.alarm) return;
     p.alarm = true;
-    if (edit_mode) return;
+    if (editor.on) return;
     lcd.setCursor(p.col, p.row);
     lcd.print(">");
 }
@@ -179,7 +194,7 @@ void alarm_mark(Pill &p) {
 void alarm_unmark(Pill &p) {
     if (!p.alarm) return;
     p.alarm = false;
-    if (edit_mode) return;
+    if (editor.on) return;
     lcd.setCursor(p.col, p.row);
     lcd.print(" ");
 }
@@ -246,7 +261,7 @@ void exit_editor(bool save) {
             EEPROM.put(pill_addr, pill.time);
         } else clock = editor.time;
     }
-    edit_mode = false;
+    editor.on = false;
     lcd.clear();
     draw_ui();
 }
@@ -298,38 +313,40 @@ void set_editor_val(const char &c) {
 }
 
 void handle_input(char &c) {
+    lcd.setCursor(1, 1);
+    lcd.print(c);
     switch(c) {
         case 'A': {
-            if (edit_mode || alarm.on) return;
+            if (editor.on || alarm.on) return;
             init_editor(1);
             draw_editor("Pill 1");
         } break;
         case 'B': {
-            if (edit_mode || alarm.on) return;
+            if (editor.on || alarm.on) return;
             init_editor(2);
             draw_editor("Pill 2");
         } break;
         case 'C': {
-            if (edit_mode || alarm.on) return;
+            if (editor.on || alarm.on) return;
             init_editor(3);
             draw_editor("Pill 3");
         } break;
         case 'D': {
-            if (edit_mode || alarm.on) return;
+            if (editor.on || alarm.on) return;
             init_editor(4);
             draw_editor("Pill 4");
         } break;
         case '#': {
-            if (edit_mode || alarm.on) return;
+            if (editor.on || alarm.on) return;
             init_editor(0);
             draw_editor("Clock");
         } break;
         case '*': {
-            if (edit_mode) exit_editor(false);
+            if (editor.on) exit_editor(false);
             else stop_alarm();
         } break;
         default: {
-            if (edit_mode) set_editor_val(c);
+            if (editor.on) set_editor_val(c);
         } break;
     }
 }
@@ -337,6 +354,8 @@ void handle_input(char &c) {
 void setup() {
     Serial.begin(9600);
     Serial.println("Starting Pill Alert");
+    lcd.begin(20, 4);
+    lcd.backlight();
     init_alarm();
     init_clock();
     init_pill(0, 0, 2);
@@ -387,55 +406,15 @@ void loop() {
 
     if (should_exec(t_input, cur_m)) {
         t_input.prev_m = cur_m;
-        char key = get_input();
-        if (key != prev_key) {
+        char key = keypad.getKey();
+        if (key && key != prev_key) {
+            Serial.println(key);
             prev_key = key;
-            if ( key != 'x') {
-                handle_input(key);
-            }
+            handle_input(key);
         }
     }
 
     if (alarm.on) {
         if (should_exec(t_alarm, cur_m)) play_alarm(cur_m);
     }
-}
-
-char get_input() {
-    // taken from: https://layadcircuits.com/ds/Smart-Keypad-Adapter/LayadCircuits_Product_LC075_SmartKP_UG_v1_0_0..pdf
-    int val = analogRead(A0);
-    if (val>(32-10)&&val<(32+10)){
-        return '1';
-    } else if (val>(63-10)&&val<(63+10)){
-        return '2';
-    } else if (val>(93-10)&&val<(93+10)){
-        return '3';
-    } else if (val>(123-10)&&val<(123+10)){
-        return '4';
-    } else if (val>(154-10)&&val<(154+10)){
-        return '5';
-    } else if (val>(184-10)&&val<(184+10)){
-        return '6';
-    } else if (val>(216-10)&&val<(216+10)){
-        return '7';
-    } else if (val>(247-10)&&val<(247+10)){
-        return '8';
-    } else if (val>(277-10)&&val<(277+10)){
-        return '9';
-    } else if (val>(308-10)&&val<(308+10)){
-        return '*';
-    } else if (val>(339-10)&&val<(339+10)){
-        return '0';
-    } else if (val>(370-10)&&val<(370+10)){
-        return '#';
-    } else if (val>(401-10)&&val<(401+10)){
-        return 'A';
-    } else if (val>(432-10)&&val<(432+10)){
-        return 'B';
-    } else if (val>(463-10)&&val<(463+10)){
-        return 'C';
-    } else if (val>(492-10)&&val<(492+10)){
-        return 'D';
-    }
-    return 'x';
 }
