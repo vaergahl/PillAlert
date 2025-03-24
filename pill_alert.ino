@@ -37,6 +37,7 @@ typedef struct {
 typedef struct {
     Servo servo;
     bool trigger;
+    bool done;
 } PillServo;
 
 typedef struct {
@@ -189,6 +190,7 @@ void init_servo(PillServo &ps, int index) {
     ps.servo.attach(index + SERVO_PAD);
     ps.servo.write(0);
     ps.trigger = false;
+    ps.done = false;
 }
 
 void init_pill(int index, int col, int row) {
@@ -224,39 +226,6 @@ void alarm_unmark(Pill &p) {
     if (editor.on) return;
     lcd.setCursor(p.col, p.row);
     lcd.print(" ");
-}
-
-void check_pills() {
-    bool should_alarm = false;
-    for (int i = 0; i < 4; i++) {
-        Pill &pill = pills[i];
-        Time &pt = pill.time;
-        char buf[16] = {0};
-        if (pt.mins == clock.mins && pt.hours == clock.hours) {
-            should_alarm = true;
-            pill.ps.trigger = true;
-            alarm_mark(pill);
-        } else alarm_unmark(pill);
-        Serial.println(buf);
-    }
-    if (should_alarm && !alarm.on ) alarm.on = true;
-    else stop_alarm();
-}
-
-void clock_update() {
-    time_inc(clock.secs, COL_SEC, 0);
-    if (clock.secs >= 60) {
-        time_set(clock.secs, 0, COL_SEC, 0);
-        time_inc(clock.mins, COL_MIN, 0);
-        // we check pill time each time minutes is incremented.
-        check_pills();
-        if (clock.mins >= 60) {
-            time_set(clock.mins, 0, COL_MIN, 0);
-            time_inc(clock.hours, COL_HOUR, 0);
-            if (clock.hours >= 24) time_set(clock.hours, 0, COL_HOUR, 0);
-        }
-    }
-    EEPROM.put(START_ADDR, clock);
 }
 
 void draw_editor(const char *n) {
@@ -377,6 +346,12 @@ void handle_input(char &c) {
     }
 }
 
+void test_clock(int h, int m, int s) {
+    clock.hours = h;
+    clock.mins = m;
+    clock.secs = s;
+}
+
 void setup() {
     Serial.begin(9600);
     Serial.println("Starting Pill Alert");
@@ -397,14 +372,47 @@ Task t_alarm = { 0, 1000 };
 Task t_note  = { 0, 0 };
 Task t_pwm   = { 0, 0 };
 Task t_servos[4] = {
-    {0, 1000},
-    {0, 1000},
-    {0, 1000},
-    {0, 1000},
+    {0, 3000},
+    {0, 3000},
+    {0, 3000},
+    {0, 3000},
 };
+Task t_servo = {0, 1000};
 
 int melody[] = { 880, 784, 659, 784, 880, 988 };
 int note_durations[] = { 300, 300, 300, 500, 300, 700 };
+
+void check_pill_timers() {
+    bool should_alarm = false;
+    for (int i = 0; i < 4; i++) {
+        Pill &pill = pills[i];
+        Time &pt = pill.time;
+        if (pt.mins == clock.mins && pt.hours == clock.hours) {
+            should_alarm = true;
+            pill.ps.trigger = true;
+            pill.ps.done = false;
+            alarm_mark(pill);
+        } else alarm_unmark(pill);
+    }
+    if (should_alarm && !alarm.on ) alarm.on = true;
+    else stop_alarm();
+}
+
+void clock_update(const unsigned long ms) {
+    time_inc(clock.secs, COL_SEC, 0);
+    if (clock.secs >= 60) {
+        time_set(clock.secs, 0, COL_SEC, 0);
+        time_inc(clock.mins, COL_MIN, 0);
+        check_pill_timers();
+        if (clock.mins >= 60) {
+            time_set(clock.mins, 0, COL_MIN, 0);
+            time_inc(clock.hours, COL_HOUR, 0);
+            if (clock.hours >= 24) time_set(clock.hours, 0, COL_HOUR, 0);
+        }
+    }
+    EEPROM.put(START_ADDR, clock);
+}
+
 
 void start_note(int freq, int duration, unsigned long ms) {
     if (freq == 0) {
@@ -413,9 +421,6 @@ void start_note(int freq, int duration, unsigned long ms) {
         note.playing = false;
         return;
     }
-
-    Serial.print("Starting Note with freq: ");
-    Serial.println(freq);
 
     note.freq = freq;
     note.half_period = (1000000 / note.freq) / 2;
@@ -463,13 +468,32 @@ void play_alarm(const unsigned long cur_ms, const unsigned long cur_us) {
     }
 }
 
+void trigger_servo(const unsigned cur_ms) {
+    for (size_t i = 0; i < 4; i++) {
+        Pill &p = pills[i];
+        PillServo &ps = p.ps;
+        if (!ps.trigger) continue;
+        Task &t = t_servos[i];
+        if (should_exec(t, cur_ms)) {
+            t.prev_m = cur_ms;
+            if (ps.done) {
+                ps.servo.write(0);
+                ps.trigger = false;
+            } else {
+                ps.servo.write(180);
+                ps.done = true;
+            }
+        }
+    }
+}
+
 void loop() {
     const unsigned long cur_ms = millis();
     const unsigned long cur_us = micros();
 
     if (should_exec(t_clock, cur_ms)) {
         t_clock.prev_m = cur_ms;
-        clock_update();
+        clock_update(cur_ms);
     }
 
     if (should_exec(t_input, cur_ms)) {
@@ -480,5 +504,8 @@ void loop() {
         }
     }
 
-    if (alarm.on) play_alarm(cur_ms, cur_us);
+    if (alarm.on) {
+        play_alarm(cur_ms, cur_us);
+        trigger_servo(cur_ms);
+    }
 }
