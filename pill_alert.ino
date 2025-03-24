@@ -37,6 +37,7 @@ typedef struct {
 typedef struct {
     Servo servo;
     bool trigger;
+    bool done;
 } PillServo;
 
 typedef struct {
@@ -103,7 +104,9 @@ bool should_exec(Task &t, const unsigned long &cur_ms) {
 }
 
 void time_render(int value, int col, int row) {
-    if (editor.on) return;
+    if (editor.on) {
+        return;
+    }
     char buf[3] = {0};
     lcd.setCursor(get_col(col), row);
     sprintf(buf, "%02d", value);
@@ -143,9 +146,15 @@ void init_alarm() {
 
 void init_clock() {
     EEPROM.get(START_ADDR, clock);
-    if (not_init(clock.secs)) clock.secs = 0;
-    if (not_init(clock.mins)) clock.mins = 0;
-    if (not_init(clock.hours)) clock.hours = 0;
+    if (not_init(clock.secs)) {
+        clock.secs = 0;
+    }
+    if (not_init(clock.mins)) {
+        clock.mins = 0;
+    }
+    if (not_init(clock.hours)) {
+        clock.hours = 0;
+    }
     editor.on = false;
 }
 
@@ -154,8 +163,11 @@ void init_editor(int m) {
     assert(m < 4 || m >= 0);
     editor.cursor =  EDITOR_START;
     editor.mode = m;
-    if (editor.mode == 0) editor.time = clock;
-    else editor.time = pills[m-1].time;
+    if (editor.mode == 0) {
+        editor.time = clock;
+    } else {
+        editor.time = pills[m-1].time;
+    }
 }
 
 void draw_ui() {
@@ -189,6 +201,7 @@ void init_servo(PillServo &ps, int index) {
     ps.servo.attach(index + SERVO_PAD);
     ps.servo.write(0);
     ps.trigger = false;
+    ps.done = false;
 }
 
 void init_pill(int index, int col, int row) {
@@ -196,8 +209,8 @@ void init_pill(int index, int col, int row) {
     Time &time = pill.time;
     const int pill_addr = START_ADDR + (sizeof(Time) * (index + 1));
     EEPROM.get(pill_addr, time);
-    if (not_init(time.secs)) time.secs = 0;
-    if (not_init(time.mins)) time.mins = 0;
+    if (not_init(time.secs))  time.secs  = 0;
+    if (not_init(time.mins))  time.mins  = 0;
     if (not_init(time.hours)) time.hours = 0;
     pill.row = row;
     pill.col = col;
@@ -211,52 +224,27 @@ int get_col(int column) {
 }
 
 void alarm_mark(Pill &p) {
-    if (p.alarm) return;
+    if (p.alarm) {
+        return;
+    }
     p.alarm = true;
-    if (editor.on) return;
+    if (editor.on) {
+        return;
+    }
     lcd.setCursor(p.col, p.row);
     lcd.print(">");
 }
 
 void alarm_unmark(Pill &p) {
-    if (!p.alarm) return;
+    if (!p.alarm) {
+        return;
+    }
     p.alarm = false;
-    if (editor.on) return;
+    if (editor.on) {
+        return;
+    }
     lcd.setCursor(p.col, p.row);
     lcd.print(" ");
-}
-
-void check_pills() {
-    bool should_alarm = false;
-    for (int i = 0; i < 4; i++) {
-        Pill &pill = pills[i];
-        Time &pt = pill.time;
-        char buf[16] = {0};
-        if (pt.mins == clock.mins && pt.hours == clock.hours) {
-            should_alarm = true;
-            pill.ps.trigger = true;
-            alarm_mark(pill);
-        } else alarm_unmark(pill);
-        Serial.println(buf);
-    }
-    if (should_alarm && !alarm.on ) alarm.on = true;
-    else stop_alarm();
-}
-
-void clock_update() {
-    time_inc(clock.secs, COL_SEC, 0);
-    if (clock.secs >= 60) {
-        time_set(clock.secs, 0, COL_SEC, 0);
-        time_inc(clock.mins, COL_MIN, 0);
-        // we check pill time each time minutes is incremented.
-        check_pills();
-        if (clock.mins >= 60) {
-            time_set(clock.mins, 0, COL_MIN, 0);
-            time_inc(clock.hours, COL_HOUR, 0);
-            if (clock.hours >= 24) time_set(clock.hours, 0, COL_HOUR, 0);
-        }
-    }
-    EEPROM.put(START_ADDR, clock);
 }
 
 void draw_editor(const char *n) {
@@ -287,7 +275,9 @@ void exit_editor(bool save) {
             pill.time = editor.time;
             const int pill_addr = START_ADDR + (sizeof(Time) * editor.mode);
             EEPROM.put(pill_addr, pill.time);
-        } else clock = editor.time;
+        } else {
+            clock = editor.time;
+        }
     }
     editor.on = false;
     lcd.clear();
@@ -297,7 +287,9 @@ void exit_editor(bool save) {
 int cur_as_index() {
     int i = editor.cursor - EDITOR_START;
     assert(i < 5);
-    if (i > 2) return i - 1;
+    if (i > 2) {
+        return i - 1;
+    }
     return i;
 }
 
@@ -305,16 +297,22 @@ bool set_editor_value(const char &c) {
     int i = cur_as_index();
     switch (i) {
         case 0: {
-            if (c - '0' > 2) return false;
+            if (c - '0' > 2) {
+                return false;
+            }
         } break;
         case 1: {
             // check prev value if has value of 2
             if (editor.values[0] == '2') {
-                if (c - '0' > 3) return false;
+                if (c - '0' > 3) {
+                    return false;
+                }
             }
         } break;
         case 2: {
-            if (c - '0' > 5) return false;
+            if (c - '0' > 5) {
+                return false;
+            }
         } break;
         default: break;
     }
@@ -329,8 +327,11 @@ void set_editor_val(const char &c) {
     if (!set_editor_value(c)) return;
     lcd.setCursor(editor.cursor, 3);
     lcd.print(" ");
-    if (editor.cursor == EDITOR_START+1) editor.cursor += 2;
-    else editor.cursor++;
+    if (editor.cursor == EDITOR_START+1) {
+        editor.cursor += 2;
+    } else {
+        editor.cursor++;
+    }
 
     if (editor.cursor > EDITOR_START+4) {
         exit_editor(true);
@@ -343,38 +344,59 @@ void set_editor_val(const char &c) {
 void handle_input(char &c) {
     switch(c) {
         case 'A': {
-            if (editor.on || alarm.on) return;
+            if (editor.on || alarm.on) {
+                return;
+            }
             init_editor(1);
             draw_editor("Pill 1");
         } break;
         case 'B': {
-            if (editor.on || alarm.on) return;
+            if (editor.on || alarm.on) {
+                return;
+            }
             init_editor(2);
             draw_editor("Pill 2");
         } break;
         case 'C': {
-            if (editor.on || alarm.on) return;
+            if (editor.on || alarm.on) {
+                return;
+            }
             init_editor(3);
             draw_editor("Pill 3");
         } break;
         case 'D': {
-            if (editor.on || alarm.on) return;
+            if (editor.on || alarm.on) {
+                return;
+            }
             init_editor(4);
             draw_editor("Pill 4");
         } break;
         case '#': {
-            if (editor.on || alarm.on) return;
+            if (editor.on || alarm.on) {
+                return;
+            }
             init_editor(0);
             draw_editor("Clock");
         } break;
         case '*': {
-            if (editor.on) exit_editor(false);
-            else stop_alarm();
+            if (editor.on) {
+                exit_editor(false);
+            } else {
+                stop_alarm();
+            }
         } break;
         default: {
-            if (editor.on) set_editor_val(c);
+            if (editor.on) {
+                set_editor_val(c);
+            }
         } break;
     }
+}
+
+void test_clock(int h, int m, int s) {
+    clock.hours = h;
+    clock.mins = m;
+    clock.secs = s;
 }
 
 void setup() {
@@ -397,14 +419,54 @@ Task t_alarm = { 0, 1000 };
 Task t_note  = { 0, 0 };
 Task t_pwm   = { 0, 0 };
 Task t_servos[4] = {
-    {0, 1000},
-    {0, 1000},
-    {0, 1000},
-    {0, 1000},
+    {0, 3000},
+    {0, 3000},
+    {0, 3000},
+    {0, 3000},
 };
+Task t_servo = {0, 1000};
 
 int melody[] = { 880, 784, 659, 784, 880, 988 };
 int note_durations[] = { 300, 300, 300, 500, 300, 700 };
+
+void check_pill_timers() {
+    bool should_alarm = false;
+    for (int i = 0; i < 4; i++) {
+        Pill &pill = pills[i];
+        Time &pt = pill.time;
+        if (pt.mins == clock.mins && pt.hours == clock.hours) {
+            should_alarm = true;
+            pill.ps.trigger = true;
+            pill.ps.done = false;
+            alarm_mark(pill);
+        } else {
+            alarm_unmark(pill);
+        }
+    }
+    if (should_alarm && !alarm.on ) {
+        alarm.on = true;
+    } else {
+        stop_alarm();
+    }
+}
+
+void clock_update(const unsigned long ms) {
+    time_inc(clock.secs, COL_SEC, 0);
+    if (clock.secs >= 60) {
+        time_set(clock.secs, 0, COL_SEC, 0);
+        time_inc(clock.mins, COL_MIN, 0);
+        check_pill_timers();
+        if (clock.mins >= 60) {
+            time_set(clock.mins, 0, COL_MIN, 0);
+            time_inc(clock.hours, COL_HOUR, 0);
+            if (clock.hours >= 24) {
+                time_set(clock.hours, 0, COL_HOUR, 0);
+            }
+        }
+    }
+    EEPROM.put(START_ADDR, clock);
+}
+
 
 void start_note(int freq, int duration, unsigned long ms) {
     if (freq == 0) {
@@ -413,9 +475,6 @@ void start_note(int freq, int duration, unsigned long ms) {
         note.playing = false;
         return;
     }
-
-    Serial.print("Starting Note with freq: ");
-    Serial.println(freq);
 
     note.freq = freq;
     note.half_period = (1000000 / note.freq) / 2;
@@ -463,13 +522,34 @@ void play_alarm(const unsigned long cur_ms, const unsigned long cur_us) {
     }
 }
 
+void trigger_servo(const unsigned cur_ms) {
+    for (size_t i = 0; i < 4; i++) {
+        Pill &p = pills[i];
+        PillServo &ps = p.ps;
+        if (!ps.trigger) {
+            continue;
+        }
+        Task &t = t_servos[i];
+        if (should_exec(t, cur_ms)) {
+            t.prev_m = cur_ms;
+            if (ps.done) {
+                ps.servo.write(0);
+                ps.trigger = false;
+            } else {
+                ps.servo.write(180);
+                ps.done = true;
+            }
+        }
+    }
+}
+
 void loop() {
     const unsigned long cur_ms = millis();
     const unsigned long cur_us = micros();
 
     if (should_exec(t_clock, cur_ms)) {
         t_clock.prev_m = cur_ms;
-        clock_update();
+        clock_update(cur_ms);
     }
 
     if (should_exec(t_input, cur_ms)) {
@@ -480,5 +560,8 @@ void loop() {
         }
     }
 
-    if (alarm.on) play_alarm(cur_ms, cur_us);
+    if (alarm.on) {
+        play_alarm(cur_ms, cur_us);
+        trigger_servo(cur_ms);
+    }
 }
