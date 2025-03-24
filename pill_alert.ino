@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <assert.h>
+#include <Servo.h>
 
 #define PAD_RIGHT 1
 #define COL_HOUR 5
@@ -11,9 +12,10 @@
 #define PILL_MIN 6
 #define PILL_HOUR 3
 #define EDITOR_START 7
+#define SERVO_PAD 10
 
 // Alarm
-#define ALARM_PIN 8
+#define ALARM_PIN A0
 #define NOTE_C6 1047
 #define NOTE_E6 1319
 #define NOTE_G6 1568
@@ -22,7 +24,7 @@
 // Addresses
 #define START_ADDR 0
 
-// keypad
+// Keypad
 #define ROWS 4
 #define COLS 4
 
@@ -33,9 +35,15 @@ typedef struct {
 } Time;
 
 typedef struct {
+    Servo servo;
+    bool trigger;
+} PillServo;
+
+typedef struct {
     Time time;
     int row, col;
     bool alarm;
+    PillServo ps;
 } Pill;
 
 typedef struct {
@@ -54,8 +62,15 @@ struct Editor {
 struct Alarm {
     bool playing;
     bool on;
-    int cur_note;
 } alarm;
+
+struct Note {
+    bool playing;
+    int freq;
+    int half_period;
+    long end_time;
+    int current;
+} note;
 
 Time clock;
 Pill pills[4] = {0};
@@ -76,15 +91,15 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 void stop_alarm() {
     alarm.on = false;
     alarm.playing = false;
-    alarm.cur_note = 0;
-    noTone(ALARM_PIN);
+    note.current = 0;
+    analogWrite(ALARM_PIN, 0);
     for (int i = 0; i < 4; i++) {
         alarm_unmark(pills[i]);
     }
 }
 
-bool should_exec(Task &t, const unsigned long &cm) {
-    return (cm - t.prev_m) >= t.interval;
+bool should_exec(Task &t, const unsigned long &cur_ms) {
+    return (cur_ms - t.prev_m) >= t.interval;
 }
 
 void time_render(int value, int col, int row) {
@@ -117,7 +132,13 @@ void init_alarm() {
     pinMode(ALARM_PIN, OUTPUT);
     alarm.on = false;
     alarm.playing = false;
-    alarm.cur_note = 0;
+
+    // Note
+    note.playing = false;
+    note.current = 0;
+    note.freq = 0;
+    note.half_period = 0;
+    note.end_time = 0;
 }
 
 void init_clock() {
@@ -164,8 +185,13 @@ void draw_ui() {
     }
 }
 
-void init_pill(int index, int col, int row) {
+void init_servo(PillServo &ps, int index) {
+    ps.servo.attach(index + SERVO_PAD);
+    ps.servo.write(0);
+    ps.trigger = false;
+}
 
+void init_pill(int index, int col, int row) {
     Pill &pill = pills[index];
     Time &time = pill.time;
     const int pill_addr = START_ADDR + (sizeof(Time) * (index + 1));
@@ -176,6 +202,7 @@ void init_pill(int index, int col, int row) {
     pill.row = row;
     pill.col = col;
     pill.alarm = false;
+    init_servo(pill.ps, index);
 }
 
 int get_col(int column) {
@@ -207,6 +234,7 @@ void check_pills() {
         char buf[16] = {0};
         if (pt.mins == clock.mins && pt.hours == clock.hours) {
             should_alarm = true;
+            pill.ps.trigger = true;
             alarm_mark(pill);
         } else alarm_unmark(pill);
         Serial.println(buf);
@@ -313,8 +341,6 @@ void set_editor_val(const char &c) {
 }
 
 void handle_input(char &c) {
-    lcd.setCursor(1, 1);
-    lcd.print(c);
     switch(c) {
         case 'A': {
             if (editor.on || alarm.on) return;
@@ -368,53 +394,91 @@ void setup() {
 Task t_clock = { 0, 1000 };
 Task t_input = { 0, 50   };
 Task t_alarm = { 0, 1000 };
-Task t_tone  = { 0, 0 };
-char prev_key = 'x';
-int melody[] = { NOTE_C6, NOTE_E6, NOTE_G6, NOTE_C7, NOTE_G6, NOTE_C6 };
+Task t_note  = { 0, 0 };
+Task t_pwm   = { 0, 0 };
+Task t_servos[4] = {
+    {0, 1000},
+    {0, 1000},
+    {0, 1000},
+    {0, 1000},
+};
+
+int melody[] = { 880, 784, 659, 784, 880, 988 };
 int note_durations[] = { 300, 300, 300, 500, 300, 700 };
 
-void play_alarm(int cur_m) {
+void start_note(int freq, int duration, unsigned long ms) {
+    if (freq == 0) {
+        analogWrite(ALARM_PIN, 0);
+        t_note.prev_m = ms + duration;
+        note.playing = false;
+        return;
+    }
+
+    Serial.print("Starting Note with freq: ");
+    Serial.println(freq);
+
+    note.freq = freq;
+    note.half_period = (1000000 / note.freq) / 2;
+    note.end_time = micros() + (duration * 1000L);
+    note.playing = true;
+    t_pwm.prev_m = micros();
+    t_pwm.interval = note.half_period;
+}
+
+void play_note(unsigned long cur_us) {
+    if (cur_us >= note.end_time) {
+        analogWrite(ALARM_PIN, 0);
+        note.playing = false;
+        return;
+    }
+
+    if (should_exec(t_pwm, cur_us)) {
+        static bool state = false;
+        analogWrite(ALARM_PIN, state ? 128 : 0);
+        state = !state;
+        t_pwm.prev_m = cur_us;
+    }
+}
+
+
+void play_alarm(const unsigned long cur_ms, const unsigned long cur_us) {
     if (alarm.playing) {
-        if (should_exec(t_tone, cur_m)) {
-            if (alarm.cur_note < 6) {
-                tone(ALARM_PIN, melody[alarm.cur_note]);
-                t_tone.interval = note_durations[alarm.cur_note] * 1.3;
-                alarm.cur_note++;
-            } else {
-                noTone(ALARM_PIN);
-                alarm.playing = false;
-                t_alarm.prev_m = cur_m;
-            }
+        if (!note.playing && note.current < 6) {
+            start_note(melody[note.current], note_durations[note.current], cur_ms);
+            t_note.interval = note_durations[note.current] * 1.3;
+            note.current++;
+        } else if (note.playing) {
+            play_note(cur_us);
+        } else {
+            alarm.playing = false;
+            t_alarm.prev_m = cur_ms;
         }
     } else {
-        if (should_exec(t_alarm, cur_m)) {
+        if (should_exec(t_alarm, cur_ms)) {
             alarm.playing = true;
-            alarm.cur_note = 0;
-            t_tone.prev_m = cur_m;
-            t_tone.interval = 0;
+            note.current = 0;
+            t_note.prev_m = cur_ms;
+            t_note.interval = 0;
         }
     }
 }
 
 void loop() {
-    const unsigned long cur_m = millis();
+    const unsigned long cur_ms = millis();
+    const unsigned long cur_us = micros();
 
-    if (should_exec(t_clock, cur_m)) {
-        t_clock.prev_m = cur_m;
+    if (should_exec(t_clock, cur_ms)) {
+        t_clock.prev_m = cur_ms;
         clock_update();
     }
 
-    if (should_exec(t_input, cur_m)) {
-        t_input.prev_m = cur_m;
+    if (should_exec(t_input, cur_ms)) {
+        t_input.prev_m = cur_ms;
         char key = keypad.getKey();
-        if (key && key != prev_key) {
-            Serial.println(key);
-            prev_key = key;
+        if (key) {
             handle_input(key);
         }
     }
 
-    if (alarm.on) {
-        if (should_exec(t_alarm, cur_m)) play_alarm(cur_m);
-    }
+    if (alarm.on) play_alarm(cur_ms, cur_us);
 }
